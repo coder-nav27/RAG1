@@ -5,7 +5,6 @@ import {
   Alert,
   Box,
   Button,
-  Card,
   Chip,
   CircularProgress,
   Dialog,
@@ -52,12 +51,48 @@ function getErrorMessage(error, fallbackMessage) {
   );
 }
 
+function isProcessingDocument(document) {
+  return document.status === "uploaded" || document.status === "processing";
+}
+
+function isCompletedDocument(document) {
+  return document.status === "completed";
+}
+
+function isFailedDocument(document) {
+  return document.status === "failed";
+}
+
+function getDocumentDisplayName(document) {
+  return (
+    document.original_filename ||
+    document.filename ||
+    document.file_name ||
+    `Document ${document.id}`
+  );
+}
+
+function getStatusChip(document) {
+  if (isCompletedDocument(document)) {
+    return <Chip label="Completed" size="small" color="success" />;
+  }
+
+  if (isProcessingDocument(document)) {
+    return <Chip label="Processing" size="small" color="warning" />;
+  }
+
+  if (isFailedDocument(document)) {
+    return <Chip label="Failed" size="small" color="error" />;
+  }
+
+  return <Chip label={document.status || "Unknown"} size="small" />;
+}
+
 function Chat() {
   const { showToast } = useToast();
   const [searchParams, setSearchParams] = useSearchParams();
 
   const initialSessionId = searchParams.get("session_id") || "";
-  const initialDocumentId = searchParams.get("document_id") || "";
 
   const bottomRef = useRef(null);
 
@@ -71,6 +106,7 @@ function Chat() {
 
   const [loadingSessions, setLoadingSessions] = useState(false);
   const [loadingMessages, setLoadingMessages] = useState(false);
+  const [loadingDocuments, setLoadingDocuments] = useState(false);
   const [sending, setSending] = useState(false);
 
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
@@ -96,6 +132,36 @@ function Chat() {
     [documents, activeSessionId]
   );
 
+  const processingDocuments = useMemo(
+    () => sessionDocuments.filter(isProcessingDocument),
+    [sessionDocuments]
+  );
+
+  const completedDocuments = useMemo(
+    () => sessionDocuments.filter(isCompletedDocument),
+    [sessionDocuments]
+  );
+
+  const failedDocuments = useMemo(
+    () => sessionDocuments.filter(isFailedDocument),
+    [sessionDocuments]
+  );
+
+  const usableDocuments = completedDocuments;
+
+  const hasProcessingDocuments = processingDocuments.length > 0;
+  const hasCompletedDocuments = completedDocuments.length > 0;
+  const hasFailedDocuments = failedDocuments.length > 0;
+
+  const canAskQuestion =
+    Boolean(activeSessionId) && !sending && !hasProcessingDocuments;
+
+  const inputPlaceholder = hasProcessingDocuments
+    ? "Document is processing. Please wait until it is completed..."
+    : hasCompletedDocuments
+      ? "Ask a question from this chat session's uploaded documents..."
+      : "Say hi, or upload a document before asking document questions...";
+
   const activeSources = useMemo(() => {
     const latestAIMessage = [...messages]
       .reverse()
@@ -120,16 +186,12 @@ function Chat() {
 
       setSessions(sessionList);
 
-      // If no active session is set and no session in URL params
       if (!activeSessionId && sessionList.length > 0) {
-        // Try to use session from URL params if available
         const sessionIdFromParams = searchParams.get("session_id");
-        
+
         if (sessionIdFromParams) {
-          // Session is already set from URL params via initial state
           setActiveSessionId(sessionIdFromParams);
         } else {
-          // Load the most recent session (first in the list)
           const firstSessionId = sessionList[0].id;
           setActiveSessionId(firstSessionId);
           setSearchParams({ session_id: firstSessionId });
@@ -144,13 +206,23 @@ function Chat() {
     }
   };
 
-  const loadDocuments = async () => {
+  const loadDocuments = async ({ silent = false } = {}) => {
     try {
+      if (!silent) {
+        setLoadingDocuments(true);
+      }
+
       const data = await getDocuments();
-      setDocuments(normalizeList(data));
+      const documentList = normalizeList(data);
+
+      setDocuments(documentList);
     } catch (error) {
       const message = getErrorMessage(error, "Failed to load documents.");
       showToast(message, "error");
+    } finally {
+      if (!silent) {
+        setLoadingDocuments(false);
+      }
     }
   };
 
@@ -170,13 +242,10 @@ function Chat() {
       const normalizedMessages = [];
 
       messageList.forEach((message) => {
-        // Each ChatMessage from backend has both question and answer
-        // Split them into separate user and AI messages
-
-        // Add user message
         if (message.question) {
           normalizedMessages.push({
             id: `${message.id}-user`,
+            messageId: message.id,
             role: "user",
             content: message.question,
             sources: [],
@@ -184,10 +253,10 @@ function Chat() {
           });
         }
 
-        // Add AI message
         if (message.answer) {
           normalizedMessages.push({
             id: `${message.id}-assistant`,
+            messageId: message.id,
             role: "assistant",
             content: message.answer,
             sources: message.sources || message.source_references || [],
@@ -215,12 +284,39 @@ function Chat() {
   useEffect(() => {
     if (activeSessionId) {
       loadMessages(activeSessionId);
+      loadDocuments({ silent: true });
     }
   }, [activeSessionId]);
 
   useEffect(() => {
     scrollToBottom();
   }, [messages, sending]);
+
+  useEffect(() => {
+    if (!activeSessionId || !hasProcessingDocuments) return;
+
+    const intervalId = setInterval(() => {
+      loadDocuments({ silent: true });
+    }, 3000);
+
+    return () => clearInterval(intervalId);
+  }, [activeSessionId, hasProcessingDocuments]);
+
+  useEffect(() => {
+    if (!activeSessionId) return;
+
+    if (hasProcessingDocuments) {
+      setSuccessMessage(
+        "Your document is processing. You can ask questions after processing is completed."
+      );
+      return;
+    }
+
+    if (hasCompletedDocuments) {
+      setSuccessMessage("Document processing completed. You can ask questions now.");
+      return;
+    }
+  }, [activeSessionId, hasProcessingDocuments, hasCompletedDocuments]);
 
   const handleRetry = () => {
     loadSessions();
@@ -258,12 +354,17 @@ function Chat() {
 
       const newSession = await createSession(title);
 
-      setSessions((prev) => [newSession, ...prev]);
-      setActiveSessionId(newSession.id);
+      const normalizedNewSession = {
+        ...newSession,
+        id: newSession.id || newSession.session_id,
+      };
+
+      setSessions((prev) => [normalizedNewSession, ...prev]);
+      setActiveSessionId(normalizedNewSession.id);
       setMessages([]);
 
       setSearchParams({
-        session_id: newSession.id,
+        session_id: normalizedNewSession.id,
       });
 
       const message = `Chat session "${title}" created.`;
@@ -333,7 +434,9 @@ function Chat() {
     }
   };
 
-  const handleDeleteMessage = async (messageId) => {
+  const handleDeleteMessage = async (message) => {
+    const messageId = message.messageId || message.id;
+
     if (!messageId) return;
 
     const confirmDelete = window.confirm(
@@ -345,7 +448,10 @@ function Chat() {
     try {
       await deleteMessage(messageId);
 
-      setMessages((prev) => prev.filter((message) => message.id !== messageId));
+      setMessages((prev) =>
+        prev.filter((item) => item.messageId !== messageId)
+      );
+
       showToast("Message deleted successfully.", "success");
     } catch (error) {
       const message = getErrorMessage(error, "Failed to delete message.");
@@ -368,6 +474,14 @@ function Chat() {
       return;
     }
 
+    if (hasProcessingDocuments) {
+      const message =
+        "Your document is still processing. Please wait until processing is completed before asking questions.";
+      setError(message);
+      showToast(message, "warning");
+      return;
+    }
+
     const tempUserMessage = {
       id: `user-${Date.now()}`,
       role: "user",
@@ -384,12 +498,13 @@ function Chat() {
     try {
       const data = await askQuestion({
         sessionId: activeSessionId,
-        documentId: null, // Always use all session documents
+        documentId: null,
         question: trimmedQuestion,
       });
 
       const aiMessage = {
         id: data.message_id || `ai-${Date.now()}`,
+        messageId: data.message_id,
         role: "assistant",
         content:
           data.answer ||
@@ -401,6 +516,8 @@ function Chat() {
 
       setMessages((prev) => [...prev, aiMessage]);
       showToast("Answer generated successfully.", "success");
+
+      loadDocuments({ silent: true });
     } catch (error) {
       const backendMessage = getErrorMessage(
         error,
@@ -417,6 +534,8 @@ function Chat() {
       setMessages((prev) => [...prev, errorAIMessage]);
       setError(backendMessage);
       showToast(backendMessage, "error");
+
+      loadDocuments({ silent: true });
     } finally {
       setSending(false);
     }
@@ -439,18 +558,16 @@ function Chat() {
           <AIMessage message={message} />
         )}
 
-        {message.id &&
-          !String(message.id).startsWith("user-") &&
-          !String(message.id).startsWith("ai-") && (
-            <IconButton
-              size="small"
-              color="error"
-              className="absolute right-2 top-0 opacity-0 transition group-hover:opacity-100"
-              onClick={() => handleDeleteMessage(message.id)}
-            >
-              <DeleteIcon fontSize="small" />
-            </IconButton>
-          )}
+        {message.messageId && (
+          <IconButton
+            size="small"
+            color="error"
+            className="absolute right-2 top-0 opacity-0 transition group-hover:opacity-100"
+            onClick={() => handleDeleteMessage(message)}
+          >
+            <DeleteIcon fontSize="small" />
+          </IconButton>
+        )}
       </div>
     );
   };
@@ -508,10 +625,15 @@ function Chat() {
             <div className="flex items-center gap-2">
               <Button
                 component={Link}
-                to="/documents/upload"
+                to={
+                  activeSessionId
+                    ? `/documents/upload?session_id=${activeSessionId}`
+                    : "/documents/upload"
+                }
                 variant="outlined"
                 size="small"
                 startIcon={<UploadFileIcon />}
+                disabled={!activeSessionId}
               >
                 Upload
               </Button>
@@ -530,8 +652,10 @@ function Chat() {
             <div className="border-b border-slate-200 bg-white px-5 py-3">
               {error && <ErrorState message={error} onRetry={handleRetry} />}
 
-              {successMessage && (
-                <Alert severity="success">{successMessage}</Alert>
+              {successMessage && !error && (
+                <Alert severity={hasProcessingDocuments ? "info" : "success"}>
+                  {successMessage}
+                </Alert>
               )}
             </div>
           )}
@@ -539,19 +663,46 @@ function Chat() {
           {activeSessionId && (
             <div className="border-b border-slate-200 bg-white px-5 py-3">
               <div className="mb-3">
-                <Typography variant="subtitle2" className="mb-2 font-semibold text-slate-700">
-                  📄 Documents in this Chat
-                </Typography>
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <Typography
+                    variant="subtitle2"
+                    className="font-semibold text-slate-700"
+                  >
+                    📄 Documents in this Chat
+                  </Typography>
+
+                  {loadingDocuments && (
+                    <div className="flex items-center gap-2 text-xs text-slate-500">
+                      <CircularProgress size={14} />
+                      Refreshing
+                    </div>
+                  )}
+                </div>
+
+                {hasProcessingDocuments && (
+                  <Alert severity="info" className="mb-3">
+                    Your document is processing. Please wait until it becomes
+                    completed before asking document questions.
+                  </Alert>
+                )}
+
+                {hasFailedDocuments && (
+                  <Alert severity="error" className="mb-3">
+                    Some document uploads failed and are not usable. Please
+                    upload the document again.
+                  </Alert>
+                )}
 
                 {sessionDocuments.length === 0 ? (
                   <div className="rounded-xl border-2 border-dashed border-orange-300 bg-orange-50 p-4">
                     <Typography variant="body2" className="text-orange-900">
-                      ⚠️ No documents uploaded yet. Please upload documents to this chat session before asking questions.
+                      ⚠️ No documents uploaded yet. You can say hi, but upload a
+                      document before asking document-based questions.
                     </Typography>
 
                     <Button
                       component={Link}
-                      to="/documents/upload"
+                      to={`/documents/upload?session_id=${activeSessionId}`}
                       variant="outlined"
                       size="small"
                       startIcon={<UploadFileIcon />}
@@ -560,44 +711,77 @@ function Chat() {
                       Upload Document
                     </Button>
                   </div>
-                ) : (
-                  <div className="space-y-2">
-                    {sessionDocuments.map((document) => {
-                      const filename =
-                        document.original_filename ||
-                        document.filename ||
-                        document.file_name ||
-                        `Document ${document.id}`;
-
-                      const fileSize = document.file_size
-                        ? `${(document.file_size / 1024).toFixed(2)} KB`
-                        : "Unknown size";
-
-                      return (
-                        <div
-                          key={document.id}
-                          className="flex items-center gap-3 rounded-lg border border-slate-200 bg-slate-50 p-3"
-                        >
-                          <div className="flex h-8 w-8 items-center justify-center rounded bg-indigo-100 text-indigo-700 text-sm font-semibold">
-                            📄
-                          </div>
-
-                          <div className="min-w-0 flex-1">
-                            <Typography variant="body2" className="truncate font-semibold">
-                              {filename}
-                            </Typography>
-
-                            <Typography variant="caption" color="text.secondary">
-                              {fileSize}
-                            </Typography>
-                          </div>
-                        </div>
-                      );
-                    })}
+                ) : usableDocuments.length === 0 && !hasProcessingDocuments ? (
+                  <div className="rounded-xl border-2 border-dashed border-red-300 bg-red-50 p-4">
+                    <Typography variant="body2" className="text-red-900">
+                      ❌ No usable documents in this chat. Failed documents are
+                      hidden from chat. Please upload again.
+                    </Typography>
 
                     <Button
                       component={Link}
-                      to="/documents/upload"
+                      to={`/documents/upload?session_id=${activeSessionId}`}
+                      variant="outlined"
+                      size="small"
+                      startIcon={<UploadFileIcon />}
+                      className="mt-2"
+                    >
+                      Upload Again
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {[...processingDocuments, ...usableDocuments].map(
+                      (document) => {
+                        const filename = getDocumentDisplayName(document);
+
+                        const fileSize = document.file_size
+                          ? `${(document.file_size / 1024).toFixed(2)} KB`
+                          : "Unknown size";
+
+                        return (
+                          <div
+                            key={document.id}
+                            className="flex items-center gap-3 rounded-lg border border-slate-200 bg-slate-50 p-3"
+                          >
+                            <div className="flex h-8 w-8 items-center justify-center rounded bg-indigo-100 text-sm font-semibold text-indigo-700">
+                              📄
+                            </div>
+
+                            <div className="min-w-0 flex-1">
+                              <Typography
+                                variant="body2"
+                                className="truncate font-semibold"
+                              >
+                                {filename}
+                              </Typography>
+
+                              <Typography
+                                variant="caption"
+                                color="text.secondary"
+                              >
+                                {fileSize}
+                              </Typography>
+
+                              {document.error_message && (
+                                <Typography
+                                  variant="caption"
+                                  className="block truncate text-red-600"
+                                >
+                                  {document.error_message}
+                                </Typography>
+                              )}
+                            </div>
+
+                            {getStatusChip(document)}
+                          </div>
+                        );
+                      }
+                    )}
+
+                    <Button
+                      component={Link}
+                      to={`/documents/upload?session_id=${activeSessionId}`}
                       variant="outlined"
                       size="small"
                       startIcon={<UploadFileIcon />}
@@ -643,8 +827,11 @@ function Chat() {
                 </Typography>
 
                 <Typography color="text.secondary" className="mt-2 max-w-md">
-                  Ask your first question from documents uploaded in this chat
-                  session.
+                  {hasProcessingDocuments
+                    ? "Your document is processing. You can ask questions after it is completed."
+                    : hasCompletedDocuments
+                      ? "Ask your first question from documents uploaded in this chat session."
+                      : "Say hi, or upload a document before asking document-based questions."}
                 </Typography>
 
                 <div className="mt-4 flex gap-2">
@@ -671,22 +858,31 @@ function Chat() {
                 fullWidth
                 multiline
                 maxRows={4}
-                placeholder="Ask a question from this chat session's uploaded documents..."
+                placeholder={inputPlaceholder}
                 value={question}
                 onChange={(event) => setQuestion(event.target.value)}
-                disabled={sending || !activeSessionId}
+                disabled={sending || !activeSessionId || hasProcessingDocuments}
               />
 
               <Button
                 type="submit"
                 variant="contained"
-                disabled={sending || !question.trim() || !activeSessionId}
+                disabled={
+                  !canAskQuestion || !question.trim() || !activeSessionId
+                }
                 endIcon={<SendIcon />}
                 className="min-w-28"
               >
-                Send
+                {hasProcessingDocuments ? "Wait" : "Send"}
               </Button>
             </div>
+
+            {hasProcessingDocuments && (
+              <Typography variant="caption" className="mt-2 block text-amber-700">
+                Document processing is running. Chat will be available after
+                processing is completed.
+              </Typography>
+            )}
           </form>
         </Box>
 
@@ -730,6 +926,7 @@ function Chat() {
         fullWidth
       >
         <DialogTitle>Create New Chat</DialogTitle>
+
         <DialogContent className="mt-4">
           <TextField
             autoFocus
@@ -737,17 +934,19 @@ function Chat() {
             label="Chat Title"
             placeholder="Enter a title for your chat session"
             value={newChatTitle}
-            onChange={(e) => setNewChatTitle(e.target.value)}
-            onKeyPress={(e) => {
-              if (e.key === "Enter") {
+            onChange={(event) => setNewChatTitle(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
                 handleCreateSessionConfirm();
               }
             }}
-            helperText="Give your chat a meaningful name (e.g., 'Project Documentation', 'Q&A Session')"
+            helperText="Give your chat a meaningful name, for example Project Documentation or Q&A Session."
           />
         </DialogContent>
+
         <DialogActions>
           <Button onClick={handleCreateSessionCancel}>Cancel</Button>
+
           <Button
             onClick={handleCreateSessionConfirm}
             variant="contained"

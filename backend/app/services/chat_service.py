@@ -9,13 +9,17 @@ from app.services.ownership_service import (
     validate_document_session_owner,
 )
 from app.services.rag_service import retrieve_user_chunks
-from app.services.prompt_service import build_rag_prompt
+from app.services.prompt_service import (
+    build_rag_prompt,
+    build_no_document_guard_prompt
+)
 from app.services.llm_service import generate_answer_from_prompt
 from app.repositories.chat_repository import (
     get_recent_chat_messages,
     create_chat_message,
 )
 from app.repositories.document_repository import get_user_document_by_id
+from app.repositories.document_repository import get_user_session_documents
 
 from app.services.context_service import (
     build_limited_rag_context,
@@ -84,6 +88,91 @@ def build_contexts_from_chunks(retrieved_chunks):
 
     return contexts
 
+def check_session_document_status(
+    db: Session,
+    user_id: int,
+    session_id: int
+):
+    documents = get_user_session_documents(
+        db=db,
+        user_id=user_id,
+        session_id=session_id
+    )
+
+    if not documents:
+        return {
+            "status": "no_documents",
+            "documents": []
+        }
+
+    processing_documents = [
+        document for document in documents
+        if document.status in ["uploaded", "processing"]
+    ]
+
+    if processing_documents:
+        return {
+            "status": "processing",
+            "documents": processing_documents
+        }
+
+    completed_documents = [
+        document for document in documents
+        if document.status == "completed"
+    ]
+
+    if completed_documents:
+        return {
+            "status": "completed",
+            "documents": completed_documents
+        }
+
+    return {
+        "status": "failed",
+        "documents": documents
+    }
+
+
+def answer_without_completed_document(
+    db: Session,
+    current_user,
+    session_id: int,
+    question: str,
+    document_status: str,
+    document_id: int | None = None,
+):
+    """
+    Used when no completed document context is available.
+
+    The LLM is allowed to answer greetings/basic conversation,
+    but must refuse knowledge-based questions based on the guard prompt.
+    """
+
+    prompt = build_no_document_guard_prompt(
+        current_question=question,
+        session_document_status=document_status
+    )
+
+    answer = generate_answer_from_prompt(prompt)
+
+    message = create_chat_message(
+        db=db,
+        user_id=current_user.id,
+        session_id=session_id,
+        document_id=document_id,
+        question=question,
+        answer=answer,
+        sources=[]
+    )
+
+    return {
+        "answer": answer,
+        "sources": [],
+        "contexts": [],
+        "session_id": session_id,
+        "timestamp": message.created_at or datetime.now(timezone.utc),
+    }    
+
 def ask_question_service(
     db: Session,
     current_user,
@@ -91,47 +180,97 @@ def ask_question_service(
     question: str,
     document_id: int | None = None,
 ):
-    # print("chat service-->")
-    
     """
     Full RAG question-answering flow.
 
-    1. Validate session ownership
-    2. Optional document ownership validation
-    3. Retrieve user-isolated chunks from ChromaDB
-    4. Get recent chat history
-    5. Build RAG prompt
-    6. Generate answer using LLM
-    7. Build sources
-    8. Save chat message in SQL
-    9. Return answer response
+    Cases:
+    1. No document uploaded:
+       - allow greeting/basic conversation using guard prompt
+       - block knowledge questions
+
+    2. Document processing:
+       - allow greeting/basic conversation using guard prompt
+       - tell user document is processing for document/knowledge questions
+
+    3. Document failed:
+       - tell user to reprocess/upload again
+
+    4. Document completed:
+       - retrieve chunks from ChromaDB
+       - build RAG prompt
+       - generate answer
+       - save message
     """
-    
-    
+
     session = validate_session_owner(
         db=db,
         session_id=session_id,
         current_user_id=current_user.id
     )
 
-    collection_name = get_default_collection_name(current_user.id)  
-    # print(f"Using collection: {collection_name}")
+    collection_name = get_default_collection_name(current_user.id)
 
+    # ======================================================
+    # CASE 1: User selected a specific document
+    # ======================================================
     if document_id is not None:
         document = validate_document_session_owner(
             db=db,
             document_id=document_id,
-            session_id=session_id,
+            session_id=session.id,
             current_user_id=current_user.id
         )
-        # print(document)
+
+        if document.status in ["uploaded", "processing"]:
+            return answer_without_completed_document(
+                db=db,
+                current_user=current_user,
+                session_id=session.id,
+                question=question,
+                document_status="processing",
+                document_id=document.id,
+            )
+
+        if document.status == "failed":
+            return answer_without_completed_document(
+                db=db,
+                current_user=current_user,
+                session_id=session.id,
+                question=question,
+                document_status="failed",
+                document_id=document.id,
+            )
+
         collection_name = document.chroma_collection
 
-        # print(collection_name)
+    # ======================================================
+    # CASE 2: User did not select a specific document
+    # Check current session document status.
+    # ======================================================
+    if document_id is None:
+        document_status = check_session_document_status(
+            db=db,
+            user_id=current_user.id,
+            session_id=session.id
+        )
+
+        if document_status["status"] in ["no_documents", "processing", "failed"]:
+            return answer_without_completed_document(
+                db=db,
+                current_user=current_user,
+                session_id=session.id,
+                question=question,
+                document_status=document_status["status"],
+                document_id=None,
+            )
+
+    # ======================================================
+    # CASE 3: Completed document exists, normal RAG flow
+    # ======================================================
     retrieved_chunks = retrieve_user_chunks(
         question=question,
         user_id=current_user.id,
-        session_id=session_id,
+        session_id=session.id,
         collection_name=collection_name,
         document_id=document_id,
         k=settings.RAG_TOP_K
@@ -143,8 +282,8 @@ def ask_question_service(
         session_id=session.id,
         limit=settings.MAX_HISTORY_MESSAGES
     )
-    
-     # ✅ Add this for RAGAS
+
+    # RAGAS contexts
     contexts = build_contexts_from_chunks(retrieved_chunks)
 
     if not has_relevant_context(retrieved_chunks):
@@ -159,19 +298,16 @@ def ask_question_service(
             max_history_context_chars=settings.MAX_HISTORY_CONTEXT_CHARS,
             max_question_chars=settings.MAX_QUESTION_CHARS,
         )
-        # print("limited context", limited_context)
 
         prompt = build_rag_prompt(
             document_context=limited_context["document_context"],
             history_context=limited_context["history_context"],
             current_question=limited_context["current_question"],
         )
-        # print("final prompt sent to LLM", prompt)
+
         answer = generate_answer_from_prompt(prompt)
-        # print("LLM generated answer", answer)
 
         sources = build_sources_from_chunks(retrieved_chunks)
-        # print(f"Built sources: {sources}")
 
     message = create_chat_message(
         db=db,
@@ -191,6 +327,60 @@ def ask_question_service(
         "timestamp": message.created_at or datetime.now(timezone.utc),
     }    
     
+    
+def check_session_document_status(
+    db: Session,
+    user_id: int,
+    session_id: int
+):
+    """
+    Check documents inside current chat session.
+
+    Returns:
+    - no_documents
+    - processing
+    - failed
+    - completed
+    """
+
+    documents = get_user_session_documents(
+        db=db,
+        user_id=user_id,
+        session_id=session_id
+    )
+
+    if not documents:
+        return {
+            "status": "no_documents",
+            "documents": []
+        }
+
+    processing_docs = [
+        doc for doc in documents
+        if doc.status in ["uploaded", "processing"]
+    ]
+
+    if processing_docs:
+        return {
+            "status": "processing",
+            "documents": processing_docs
+        }
+
+    completed_docs = [
+        doc for doc in documents
+        if doc.status == "completed"
+    ]
+
+    if completed_docs:
+        return {
+            "status": "completed",
+            "documents": completed_docs
+        }
+
+    return {
+        "status": "failed",
+        "documents": documents
+    }
     
     
     

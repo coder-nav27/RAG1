@@ -21,6 +21,8 @@ from app.services.rag_service import (
     delete_document_chunks_from_chromadb,
 )
 from app.services.ownership_service import validate_session_owner
+from app.db.database import SessionLocal
+from app.repositories.user_repository import get_user_by_id
 
 
 async def upload_and_process_document(
@@ -60,40 +62,68 @@ async def upload_and_process_document(
         status="uploaded",
     )
 
+    background_tasks.add_task(
+        process_document_background,
+        document_id=document.id,
+        user_id=current_user.id
+    )
+
+    return document
+
+
+def process_document_background(
+    document_id: int,
+    user_id: int
+):
+    """
+    Background document processing.
+
+    Important:
+    Background tasks must use their own DB session.
+    Do not reuse request db session here.
+    """
+
+    db = SessionLocal()
+
     try:
-        process_existing_document(
+        user = get_user_by_id(
             db=db,
-            current_user=current_user,
-            document=document
+            user_id=user_id
         )
 
-        return get_user_document_by_id(
+        document = get_user_document_by_id(
             db=db,
-            user_id=current_user.id,
-            document_id=document.id
+            user_id=user_id,
+            document_id=document_id
+        )
+
+        if not user or not document:
+            return
+
+        process_existing_document(
+            db=db,
+            current_user=user,
+            document=document
         )
 
     except HTTPException as e:
         update_document_status(
             db=db,
-            document_id=document.id,
+            document_id=document_id,
             status="failed",
-            error_message=e.detail
+            error_message=str(e.detail)
         )
-        raise e
 
     except Exception as e:
         update_document_status(
             db=db,
-            document_id=document.id,
+            document_id=document_id,
             status="failed",
             error_message=str(e)
         )
 
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Document processing failed: {str(e)}"
-        )
+    finally:
+        db.close()
 
 
 def process_existing_document(
@@ -153,6 +183,7 @@ def process_existing_document(
         filename=document.filename,
         collection_name=document.chroma_collection
     )
+    print("Chunks stored in ChromaDB")
 
     update_document_status(
         db=db,
