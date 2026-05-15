@@ -11,7 +11,9 @@ from app.services.ownership_service import (
 from app.services.rag_service import retrieve_user_chunks
 from app.services.prompt_service import (
     build_rag_prompt,
-    build_no_document_guard_prompt
+    build_no_document_guard_prompt,
+    build_basic_conversation_prompt,
+    build_message_intent_guard_prompt,
 )
 from app.services.llm_service import generate_answer_from_prompt
 from app.repositories.chat_repository import (
@@ -172,6 +174,51 @@ def answer_without_completed_document(
         "session_id": session_id,
         "timestamp": message.created_at or datetime.now(timezone.utc),
     }    
+    
+    
+def is_basic_conversation_message(question: str) -> bool:
+    """
+    Uses LLM to decide if message is greeting/basic conversation.
+    If the guard fails, default to RAG for safety.
+    """
+
+    prompt = build_message_intent_guard_prompt(question)
+
+    result = generate_answer_from_prompt(prompt)
+
+    normalized = result.strip().upper()
+
+    return "BASIC_CONVERSATION" in normalized and "DOCUMENT_OR_KNOWLEDGE_QUESTION" not in normalized
+
+
+def answer_basic_conversation(
+    db: Session,
+    current_user,
+    session_id: int,
+    question: str,
+):
+    prompt = build_basic_conversation_prompt(question)
+
+    answer = generate_answer_from_prompt(prompt)
+
+    message = create_chat_message(
+        db=db,
+        user_id=current_user.id,
+        session_id=session_id,
+        document_id=None,
+        question=question,
+        answer=answer,
+        sources=[]
+    )
+
+    return {
+        "answer": answer,
+        "sources": [],
+        "contexts": [],
+        "session_id": session_id,
+        "timestamp": message.created_at or datetime.now(timezone.utc),
+    }
+    
 
 def ask_question_service(
     db: Session,
@@ -207,6 +254,14 @@ def ask_question_service(
         session_id=session_id,
         current_user_id=current_user.id
     )
+    
+    if is_basic_conversation_message(question):
+        return answer_basic_conversation(
+            db=db,
+            current_user=current_user,
+            session_id=session.id,
+            question=question
+        )
 
     collection_name = get_default_collection_name(current_user.id)
 

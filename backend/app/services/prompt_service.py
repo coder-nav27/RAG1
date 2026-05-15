@@ -132,3 +132,81 @@ Assistant: I could not find this information in this chat session's uploaded doc
 
 FINAL ANSWER:
 """.strip()
+
+
+def build_message_intent_guard_prompt(current_question: str) -> str:
+    return f"""
+You are an intent classifier for a document-based RAG chatbot.
+
+USER MESSAGE:
+{current_question}
+
+Your job is to classify the user message into exactly one category.
+
+Categories:
+
+1. BASIC_CONVERSATION
+Use this if the message is greeting, small talk, thanks, goodbye, asking who you are, asking how you are, or asking what the app can do.
+
+Examples:
+- hi
+- hii
+- hiii
+- hello
+- hey
+- good morning
+- how are you?
+- thanks
+- thank you
+- bye
+- who are you?
+- what can you do?
+
+2. DOCUMENT_OR_KNOWLEDGE_QUESTION
+Use this if the message asks for factual information, explanation, summary, definition, recipe, coding help, document content, comparison, analysis, or anything that needs knowledge or uploaded document context.
+
+Examples:
+- what is machine learning?
+- explain this document
+- summarize the PDF
+- what is the conclusion?
+- give me pizza recipe
+- explain Python list
+- what dataset is used?
+- tell me about the project
+
+Important:
+If the message contains both greeting and a real question, classify as DOCUMENT_OR_KNOWLEDGE_QUESTION.
+
+Examples:
+- hi, what is this document about?
+- hello, explain this PDF
+- hey, what dataset is used?
+
+Return only one word:
+BASIC_CONVERSATION
+or
+DOCUMENT_OR_KNOWLEDGE_QUESTION
+""".strip()
+
+
+
+def build_basic_conversation_prompt(current_question: str) -> str:
+    return f"""
+You are a friendly document-based RAG assistant.
+
+USER MESSAGE:
+{current_question}
+
+Rules:
+1. Reply naturally and briefly.
+2. You may greet the user, respond to small talk, thanks, goodbye, or explain what you can do.
+3. Do not answer factual knowledge questions here.
+4. Do not pretend you read a document unless document context is provided.
+5. Keep response short.
+
+If user asks what you can do, explain:
+"I can answer questions from documents uploaded in this chat session."
+
+FINAL ANSWER:
+""".strip()
