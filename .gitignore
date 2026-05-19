@@ -295,10 +295,10 @@ frontend/.cache/
 *.safetensors
 *.bin
 
-models/
-backend/models_cache/
+# models/
+# backend/models_cache/
 backend/model_cache/
-model_cache/
+# model_cache/
 
 
 # =========================================================

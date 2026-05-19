@@ -107,28 +107,25 @@ VERY IMPORTANT RULES:
 6. Do not answer using outside knowledge.
 7. Keep the answer short and clear.
 
-Allowed examples:
-User: hi
-Assistant: Hello! How can I help you with your documents today?
+# Allowed examples:
+# User: hi
+# Assistant: Hello! How can I help you with your documents today?
 
-User: hello
-Assistant: Hi! Upload a document in this chat session and I can answer questions from it.
+# User: hello
+# Assistant: Hi! Upload a document in this chat session and I can answer questions from it.
 
-User: how are you?
-Assistant: I am ready to help you with your uploaded documents.
+# User: how are you?
+# Assistant: I am ready to help you with your uploaded documents.
 
-User: what can you do?
-Assistant: I can answer questions from documents uploaded in this chat session.
+# User: what can you do?
+# Assistant: I can answer questions from documents uploaded in this chat session.
 
-Blocked examples:
-User: what is machine learning?
-Assistant: I could not find this information in this chat session's uploaded documents.
+# Blocked examples:
+# User: what is machine learning?
+# Assistant: I could not find this information in this chat session's uploaded documents.
 
-User: give me pizza recipe
-Assistant: I could not find this information in this chat session's uploaded documents.
-
-User: explain Python list
-Assistant: I could not find this information in this chat session's uploaded documents.
+# User: explain Python list
+# Assistant: I could not find this information in this chat session's uploaded documents.
 
 FINAL ANSWER:
 """.strip()
