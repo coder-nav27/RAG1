@@ -140,15 +140,26 @@ USER MESSAGE:
 
 Your job is to classify the user message into exactly one category.
 
-Categories:
+Return only one of these two labels:
+BASIC_CONVERSATION
+DOCUMENT_OR_KNOWLEDGE_QUESTION
 
-1. BASIC_CONVERSATION
-Use this if the message is greeting, small talk, thanks, goodbye, asking who you are, asking how you are, or asking what the app can do.
+CATEGORY 1: BASIC_CONVERSATION
 
-Examples:
+Use BASIC_CONVERSATION if the user message is:
+- greeting
+- small talk
+- thanks
+- goodbye
+- asking who you are
+- asking your name
+- asking about yourself
+- asking what you can do
+- asking how to use the app
+- asking whether you can help
+
+Examples of BASIC_CONVERSATION:
 - hi
-- hii
-- hiii
 - hello
 - hey
 - good morning
@@ -157,35 +168,85 @@ Examples:
 - thank you
 - bye
 - who are you?
+- what are you?
+- what is your name?
+- what your name?
+- your name?
+- can you tell me about yourself?
+- tell me about yourself
 - what can you do?
+- what you do?
+- how can you help me?
+- how to use this app?
+- can you help me?
 
-2. DOCUMENT_OR_KNOWLEDGE_QUESTION
-Use this if the message asks for factual information, explanation, summary, definition, recipe, coding help, document content, comparison, analysis, or anything that needs knowledge or uploaded document context.
+CATEGORY 2: DOCUMENT_OR_KNOWLEDGE_QUESTION
 
-Examples:
+Use DOCUMENT_OR_KNOWLEDGE_QUESTION if the user asks for:
+- factual information
+- explanation
+- definition
+- summary
+- recipe
+- coding help
+- document content
+- document summary
+- comparison
+- analysis
+- general knowledge
+- anything that needs uploaded document context or outside knowledge
+
+Examples of DOCUMENT_OR_KNOWLEDGE_QUESTION:
 - what is machine learning?
+- what is sunlight?
 - explain this document
 - summarize the PDF
+- give me the summary of this document
 - what is the conclusion?
 - give me pizza recipe
 - explain Python list
 - what dataset is used?
 - tell me about the project
+- what is artificial intelligence?
 
-Important:
-If the message contains both greeting and a real question, classify as DOCUMENT_OR_KNOWLEDGE_QUESTION.
+IMPORTANT:
+If the message contains both a greeting and a real knowledge/document question, classify it as DOCUMENT_OR_KNOWLEDGE_QUESTION.
 
 Examples:
 - hi, what is this document about?
 - hello, explain this PDF
 - hey, what dataset is used?
+- hi, what is machine learning?
 
-Return only one word:
-BASIC_CONVERSATION
-or
-DOCUMENT_OR_KNOWLEDGE_QUESTION
+Return only the label.
+Do not explain.
+Do not add punctuation.
 """.strip()
 
+
+def build_basic_conversation_prompt(current_question: str) -> str:
+    return f"""
+You are a friendly document-based RAG assistant.
+
+USER MESSAGE:
+{current_question}
+
+Rules:
+1. Reply naturally and briefly.
+2. You may answer greetings, small talk, thanks, goodbye, who you are, your name, what you can do, and how to use the app.
+3. You must not answer factual knowledge questions here.
+4. You must not pretend you read a document unless document context is provided.
+5. Keep the response short.
+
+Your identity:
+You are a document-based RAG assistant.
+You help users upload documents and ask questions from documents uploaded in the current chat session.
+
+If the user asks your name or who you are, say you are their document assistant.
+If the user asks what you can do, say you can answer questions from documents uploaded in this chat session.
+
+FINAL ANSWER:
+""".strip()
 
 
 def build_basic_conversation_prompt(current_question: str) -> str:
