@@ -349,3 +349,4 @@ backend/_renders/
 !frontend/tailwind.config.js
 !frontend/postcss.config.js
 !frontend/.env.example
+# Configured for RAG Application
