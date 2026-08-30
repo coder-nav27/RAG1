@@ -4,33 +4,51 @@ from huggingface_hub import InferenceClient
 from app.core.config import settings
 
 
-def get_huggingface_client() -> InferenceClient:
-    if not settings.HF_TOKEN:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="HF_TOKEN is missing. Add it in your .env file."
-        )
+def extract_context_from_prompt(prompt: str) -> str:
+    """
+    Extract document context section from RAG prompt.
+    """
+    if "Context:" in prompt:
+        parts = prompt.split("Context:", 1)
+        if len(parts) > 1:
+            ctx_part = parts[1]
+            if "Question:" in ctx_part:
+                return ctx_part.split("Question:", 1)[0].strip()
+            return ctx_part.strip()
+    return prompt.strip()
 
-    return InferenceClient(
-        provider=settings.HF_INFERENCE_PROVIDER,
-        api_key=settings.HF_TOKEN,
-    )
+
+def generate_answer_from_context_fallback(prompt: str) -> str:
+    """
+    Fallback answer generator when HF API token is unconfigured or fails.
+    Extracts relevant document content directly from retrieved context.
+    """
+    if "RETRIEVED DOCUMENT CONTEXT:" in prompt:
+        parts = prompt.split("RETRIEVED DOCUMENT CONTEXT:", 1)[1]
+        if "RECENT CHAT HISTORY:" in parts:
+            parts = parts.split("RECENT CHAT HISTORY:", 1)[0]
+        elif "CURRENT USER QUESTION:" in parts:
+            parts = parts.split("CURRENT USER QUESTION:", 1)[0]
+
+        context_text = parts.strip()
+        if context_text and "No relevant document context found" not in context_text:
+            return f"Based on your uploaded document:\n\n{context_text}"
+
+    return "I could not find this information in your uploaded documents."
 
 
 def generate_answer_with_huggingface(prompt: str) -> str:
     print("LLM service (generate answer with Hugging Face) -->")
-    """
-    Generate answer using Hugging Face Inference Providers.
 
-    Model:
-    meta-llama/Llama-3.1-8B-Instruct
-
-    Provider:
-    novita
-    """
+    if not settings.HF_TOKEN or settings.HF_TOKEN == "your-huggingface-token":
+        print("HF_TOKEN is default or missing. Using context fallback.")
+        return generate_answer_from_context_fallback(prompt)
 
     try:
-        client = get_huggingface_client()
+        client = InferenceClient(
+            provider=settings.HF_INFERENCE_PROVIDER,
+            api_key=settings.HF_TOKEN,
+        )
 
         completion = client.chat.completions.create(
             model=settings.HF_LLM_MODEL,
@@ -55,50 +73,19 @@ def generate_answer_with_huggingface(prompt: str) -> str:
 
         answer = completion.choices[0].message.content
 
-        if not answer or not answer.strip():
-            return "I could not generate an answer right now."
-
-        return answer.strip()
+        if answer and answer.strip():
+            return answer.strip()
 
     except Exception as e:
-        error_text = str(e)
+        print(f"Hugging Face LLM call failed: {e}. Falling back to extracted context.")
 
-        if "402" in error_text or "Payment Required" in error_text:
-            return (
-                "The relevant document content was found, but Hugging Face provider billing/credits "
-                "are required for this model/provider."
-            )
-
-        if "401" in error_text or "Unauthorized" in error_text:
-            return (
-                "The relevant document content was found, but Hugging Face authentication failed. "
-                "Please check your HF_TOKEN."
-            )
-
-        if "403" in error_text or "gated" in error_text.lower():
-            return (
-                "The relevant document content was found, but access to this Llama model is blocked. "
-                "Please accept the model license on Hugging Face and check your token permissions."
-            )
-
-        if "429" in error_text or "rate" in error_text.lower():
-            return (
-                "The relevant document content was found, but Hugging Face rate limit was reached. "
-                "Please try again later."
-            )
-
-        return f"Hugging Face LLM generation failed: {error_text}"
+    return generate_answer_from_context_fallback(prompt)
 
 
 def generate_answer_from_prompt(prompt: str) -> str:
     print("LLM service (generate answer from prompt) -->")
-    """
-    Main function used by chat_service.py.
-
-    This keeps your existing RAG code unchanged.
-    """
 
     if settings.LLM_PROVIDER == "huggingface":
         return generate_answer_with_huggingface(prompt)
 
-    return "No valid LLM provider configured."
+    return generate_answer_from_context_fallback(prompt)

@@ -23,7 +23,7 @@ import RefreshIcon from "@mui/icons-material/Refresh";
 
 import DashboardLayout from "../layouts/DashboardLayout";
 import { uploadDocument } from "../api/documentApi";
-import { getSessions } from "../api/sessionApi";
+import { getSessions, createSession } from "../api/sessionApi";
 import { useToast } from "../context/ToastContext";
 import ErrorState from "../components/common/ErrorState";
 import PageLoader from "../components/common/PageLoader";
@@ -74,8 +74,28 @@ function DocumentUpload() {
       const sessionList = normalizeList(data);
 
       setSessions(sessionList);
+      if (sessionList.length > 0 && !selectedSessionId) {
+        setSelectedSessionId(sessionList[0].id);
+      }
     } catch (error) {
       const message = getErrorMessage(error, "Failed to load chat sessions.");
+      setError(message);
+      showToast(message, "error");
+    } finally {
+      setLoadingSessions(false);
+    }
+  };
+
+  const handleCreateQuickSession = async () => {
+    try {
+      setLoadingSessions(true);
+      const newSession = await createSession("Document Chat");
+      const updatedList = [newSession, ...sessions];
+      setSessions(updatedList);
+      setSelectedSessionId(newSession.id);
+      showToast("Chat session created successfully!", "success");
+    } catch (err) {
+      const message = getErrorMessage(err, "Failed to create session.");
       setError(message);
       showToast(message, "error");
     } finally {
@@ -260,8 +280,16 @@ function DocumentUpload() {
               </FormControl>
 
               {sessions.length === 0 && (
-                <Alert severity="warning" className="mb-6">
-                  No chat session found. Please create a chat session first.
+                <Alert
+                  severity="warning"
+                  className="mb-6 flex items-center justify-between"
+                  action={
+                    <Button color="primary" variant="contained" size="small" onClick={handleCreateQuickSession}>
+                      + Create Session Now
+                    </Button>
+                  }
+                >
+                  No chat session found. Please create or select a chat session first.
                 </Alert>
               )}
 

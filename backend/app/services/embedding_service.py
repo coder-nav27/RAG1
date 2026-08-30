@@ -10,17 +10,13 @@ from app.core.config import settings
 class HuggingFaceBGEEmbeddings:
     """
     LangChain-compatible embedding wrapper for Hugging Face Inference API.
-
-    Chroma expects an object with:
-    - embed_documents(texts: list[str]) -> list[list[float]]
-    - embed_query(text: str) -> list[float]
     """
 
     def __init__(self):
-        if not settings.HF_TOKEN:
+        if not settings.HF_TOKEN or settings.HF_TOKEN == "your-huggingface-token":
             raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="HF_TOKEN is missing. Add it in your .env file."
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="HF_TOKEN is missing or default in .env file."
             )
 
         self.client = InferenceClient(
@@ -31,17 +27,8 @@ class HuggingFaceBGEEmbeddings:
         self.model = settings.HF_EMBEDDING_MODEL
 
     def _normalize_embedding_response(self, response):
-        """
-        Hugging Face providers may return:
-        - list[float]
-        - list[list[float]]
-        - object with .tolist()
-        This function normalizes response into Python lists.
-        """
-
         if hasattr(response, "tolist"):
             response = response.tolist()
-
         return response
 
     def embed_query(self, text: str) -> List[float]:
@@ -53,7 +40,6 @@ class HuggingFaceBGEEmbeddings:
 
             response = self._normalize_embedding_response(response)
 
-            # Sometimes response is [[...]], sometimes [...]
             if response and isinstance(response[0], list):
                 return response[0]
 
@@ -91,82 +77,74 @@ class HuggingFaceBGEEmbeddings:
             )
 
 
+class LocalBGEEmbeddings:
+    """
+    LangChain-compatible local embedding wrapper using SentenceTransformer.
+    Runs 100% locally without requiring any API keys.
+    """
+
+    _model_instance = None
+
+    def __init__(self):
+        if LocalBGEEmbeddings._model_instance is None:
+            try:
+                # Use fast, lightweight 90MB local embedding model
+                LocalBGEEmbeddings._model_instance = SentenceTransformer("all-MiniLM-L6-v2")
+            except Exception as e:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Local embedding model loading failed: {str(e)}"
+                )
+        self.model = LocalBGEEmbeddings._model_instance
+
+    def embed_query(self, text: str) -> List[float]:
+        try:
+            embedding = self.model.encode(
+                text,
+                normalize_embeddings=True
+            )
+            return embedding.tolist()
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Local query embedding failed: {str(e)}"
+            )
+
+    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        try:
+            embeddings = self.model.encode(
+                texts,
+                normalize_embeddings=True,
+                batch_size=8
+            )
+            return embeddings.tolist()
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Local document embedding failed: {str(e)}"
+            )
+
+
 def get_embedding_model():
     """
     Main embedding model used by ChromaDB.
+    Prefers local embedding if HF_TOKEN is default or unconfigured.
     """
+    if settings.EMBEDDING_PROVIDER in ["local", "local_huggingface", "sentence_transformers"]:
+        return LocalBGEEmbeddings()
 
     if settings.EMBEDDING_PROVIDER == "huggingface":
-        return HuggingFaceBGEEmbeddings()
+        if not settings.HF_TOKEN or settings.HF_TOKEN == "your-huggingface-token":
+            return LocalBGEEmbeddings()
+        try:
+            return HuggingFaceBGEEmbeddings()
+        except Exception:
+            return LocalBGEEmbeddings()
 
-    raise HTTPException(
-        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        detail="No valid embedding provider configured."
-    )
+    return LocalBGEEmbeddings()
 
 
 def test_embedding_model(text: str):
     embeddings = get_embedding_model()
     vector = embeddings.embed_query(text)
-
     return vector
-
-# class LocalBGEEmbeddings:
-#     """
-#     LangChain-compatible local embedding wrapper.
-
-#     Chroma expects:
-#     - embed_documents(texts) -> list[list[float]]
-#     - embed_query(text) -> list[float]
-#     """
-
-#     def __init__(self):
-#         try:
-#             self.model = SentenceTransformer(settings.HF_EMBEDDING_MODEL)
-#         except Exception as e:
-#             raise HTTPException(
-#                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-#                 detail=f"Local embedding model loading failed: {str(e)}"
-#             )
-
-#     def embed_query(self, text: str) -> List[float]:
-#         try:
-#             embedding = self.model.encode(
-#                 text,
-#                 normalize_embeddings=True
-#             )
-#             return embedding.tolist()
-#         except Exception as e:
-#             raise HTTPException(
-#                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-#                 detail=f"Local query embedding failed: {str(e)}"
-#             )
-
-#     def embed_documents(self, texts: List[str]) -> List[List[float]]:
-#         try:
-#             embeddings = self.model.encode(
-#                 texts,
-#                 normalize_embeddings=True,
-#                 batch_size=8
-#             )
-#             return embeddings.tolist()
-#         except Exception as e:
-#             raise HTTPException(
-#                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-#                 detail=f"Local document embedding failed: {str(e)}"
-#             )
-
-
-# def get_embedding_model():
-#     if settings.EMBEDDING_PROVIDER == "local_huggingface":
-#         return LocalBGEEmbeddings()
-
-#     raise HTTPException(
-#         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-#         detail="No valid embedding provider configured."
-#     )
-
-
-# def test_embedding_model(text: str):
-#     embeddings = get_embedding_model()
-#     return embeddings.embed_query(text)

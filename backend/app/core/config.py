@@ -1,4 +1,4 @@
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import List
 
 
@@ -9,7 +9,7 @@ class Settings(BaseSettings):
 
     DATABASE_URL: str = "sqlite:///./rag_app.db"
 
-    JWT_SECRET_KEY: str 
+    JWT_SECRET_KEY: str = "default-rag-secret-key-change-in-production"
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
 
@@ -54,9 +54,7 @@ class Settings(BaseSettings):
     def allowed_file_types_list(self) -> List[str]:
         return [file_type.strip() for file_type in self.ALLOWED_FILE_TYPES.split(",")]
 
-    class Config:
-        env_file = ".env"
-        case_sensitive = True
+    model_config = SettingsConfigDict(env_file=".env", case_sensitive=True, extra="ignore")
 
 
 settings = Settings()

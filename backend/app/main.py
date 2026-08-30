@@ -9,8 +9,11 @@ from app.api.v1.api import api_router
 from app.db import base
 
 
+from app.db.database import engine
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    base.Base.metadata.create_all(bind=engine)
     yield
 
 

@@ -103,16 +103,16 @@ def retrieve_user_chunks(
         if document_id is not None:
             metadata_filter = {
                 "$and": [
-                    {"user_id": {"$eq": str(user_id)}},
-                    {"session_id": {"$eq": str(session_id)}},
-                    {"document_id": {"$eq": str(document_id)}}
+                    {"user_id": str(user_id)},
+                    {"session_id": str(session_id)},
+                    {"document_id": str(document_id)}
                 ]
             }
         else:
             metadata_filter = {
                 "$and": [
-                    {"user_id": {"$eq": str(user_id)}},
-                    {"session_id": {"$eq": str(session_id)}}
+                    {"user_id": str(user_id)},
+                    {"session_id": str(session_id)}
                 ]
             }
 
